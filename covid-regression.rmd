@@ -60,6 +60,10 @@ ggplot(data_covid, aes(x = deaths_per1000)) + geom_density()
 
 
 ```{r}
+data_covid_sub <- data_covid %>%
+  rename(pct_trump = pct) %>%
+  select(deaths_per1000, Black, Hispanic, IncomePerCap, 
+         Poverty, Unemployment, pct_trump)
 
 ```
 
@@ -75,12 +79,25 @@ Using `caret` (or something else if you like), prepare two datasets of pre-proce
 ## Train-test split
 
 ```{r}
+set.seed(20210325)
+train_id<- createDataPartition(data_covid_sub$deaths_per1000, 
+                               p = .7, list = F)
+
+data_train <- data_covid_sub %>% slice(train_id)
+data_test <- data_covid_sub %>% slice(-train_id)
+
+
 
 ```
 
 ## Preprocess
 
 ```{r}
+prep <- data_train %>% select(-deaths_per1000) %>%
+  preProcess(method = c('center', 'scale'))
+
+data_train_preped <- predict(prep, data_train)
+data_test_preped <- predict(prep, data_test)
 
 ```
 
@@ -93,10 +110,30 @@ Using `caret` (or something else if you like), prepare two datasets of pre-proce
 - Evaluate the model
 
 ```{r}
+model_lm <- lm(deaths_per1000 ~ ., data = data_train_preped)
+data_train_preped %>%
+  mutate(pred_lm = predict(model_lm)) %>%
+  ggplot(aes(x = pred_lm, y = deaths_per1000)) + geom_point()
+
+summary(model_lm)
 
 ```
 ```{r}
+data_test_preped %>%
+  mutate(pred_lm = predict(model_lm, .)) %>%
+  ggplot(aes(x = pred_lm, y = deaths_per1000)) + geom_point()
 
+summary(model_lm)
+
+```
+
+```{r}
+  rmse_lm_trian <- ( data_train_preped$deaths_per1000 - predict(model_lm))^2 %>% 
+    mean() %>% sqrt()
+  rmse_lm_test <- (data_test_preped$deaths_per1000 - 
+                     predict(model_lm, data_test_preped))^2 %>% mean() %>% sqrt()
+  rmse_lm_trian
+  rmse_lm_test
 ```
 
 ### Additional movel evaluations
@@ -112,9 +149,22 @@ Using the linear regression model as the baseline we attempt two things:
       
 
 ```{r}
+ctrl <- trainControl(method = "repeatedcv",
+                     number = 5,
+                     repeats = 3)
+model_knn <- train(deaths_per1000 ~ ., data = data_train_preped,
+                   method = "knn", trControl = ctrl)
 
+model_knn
 ```
-
+```{r}
+  rmse_knn_trian <- ( data_train_preped$deaths_per1000 - predict(model_knn))^2 %>% 
+      mean() %>% sqrt()
+  rmse_knn_test <- (data_test_preped$deaths_per1000 - 
+                     predict(model_knn, data_test_preped))^2 %>% mean() %>% sqrt()
+  rmse_knn_trian
+  rmse_knn_test
+```
 ## LASSO and ridge regression
 
 - Now, let's run LASSO and/or Ridge regression. 
@@ -125,25 +175,85 @@ Using the linear regression model as the baseline we attempt two things:
 ### LASSO Outcome
 
 ```{r}
+data_train_x <- data_train_preped %>% select(!deaths_per1000) %>% as.matrix()
+data_test_x <- data_test_preped %>% select(!deaths_per1000) %>% as.matrix()
+
+model_lasso <- cv.glmnet(data_train_x, data_train_preped$deaths_per1000,  
+                         alpha = 1,
+                         type.measure = "mse", 
+                         family = "gaussian")
+
+plot(model_lasso)
 
 ```
 
+```{r}
+model_lasso %>% coef()
 
+pred_train_lasso <- predict(model_lasso, data_train_x)
+pred_test_lasso <- predict(model_lasso, newx = data_test_x)
+rmse_trian_lasso <- (pred_train_lasso - data_train_preped$deaths_per1000)^2 %>% 
+  mean() %>% sqrt()
+rmse_test_lasso <- (pred_test_lasso - 
+                   data_test_preped$deaths_per1000)^2 %>% mean() %>% sqrt()
+  
+
+  
+rmse_trian_lasso
+rmse_test_lasso
+
+plot(model_lasso$glmnet.fit, xvar = "lambda")
+
+```
 
 ### Ridge regression outcome
 
 ```{r}
+model_ridge <- cv.glmnet(data_train_x, data_train_preped$deaths_per1000,  
+                         alpha = 0,
+                         type.measure = "mse", 
+                         family = "gaussian")
 
+plot(model_ridge)
 
 ```
+```{r}
+model_ridge %>% coef()
 
+pred_train_ridge <- predict(model_ridge, data_train_x)
+pred_test_ridge <- predict(model_ridge, newx = data_test_x)
+rmse_trian_ridge <- (pred_train_ridge - data_train_preped$deaths_per1000)^2 %>% 
+  mean() %>% sqrt()
+rmse_test_ridge <- (pred_test_ridge - 
+                   data_test_preped$deaths_per1000)^2 %>% mean() %>% sqrt()
+  
+
+  
+rmse_trian_ridge
+rmse_test_ridge
+
+plot(model_ridge$glmnet.fit, xvar = "lambda")
+```
 
 ### Compare coefs: lm, lasso/ridge
 
 Compare the cefficients across the models. What do you find?
 
 ```{r}
+list(model_lm, model_lasso, model_ridge) %>%
+  map(~coef(.) %>% as.matrix %>% as.data.frame) %>% bind_cols() %>%
+  rename(lm = 1, lasso = 2, ridge = 3)
 
+list(model_lm, model_lasso, model_ridge) %>%
+  map(~coef(.) %>% as.matrix %>% as.data.frame) %>% bind_cols() %>%
+  rename(lm = 1, lasso = 2, ridge = 3) %>%
+  rownames_to_column(var = "variable") %>% pivot_longer(2:4) %>%
+  filter(variable != "(Intercept)") %>%
+  ggplot(aes(x = value, y = variable, color = name)) +
+  geom_vline(xintercept = 0, color = 'grey') + 
+  geom_point() +
+  theme_minimal()
+  
   
 
 ```
